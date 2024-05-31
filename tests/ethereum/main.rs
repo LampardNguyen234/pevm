@@ -9,7 +9,7 @@
 // - Help outline the minimal state commitment logic for PEVM.
 
 use ahash::AHashMap;
-use pevm::PevmError;
+use pevm::{Pevm, PevmError};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use revm::db::PlainAccount;
 use revm::primitives::ruint::ParseError;
@@ -132,7 +132,7 @@ fn run_test_unit(path: &Path, unit: &TestUnit) {
 
             match (
                 test.expect_exception.as_deref(),
-                pevm::execute_revm(
+                Pevm::default().execute_revm(
                     common::build_inmem_db(chain_state.clone()),
                     spec_id,
                     build_block_env(&unit.env),

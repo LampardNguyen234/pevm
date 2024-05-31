@@ -1,5 +1,6 @@
 use std::{
     cmp::{max, min},
+    num::NonZeroUsize,
     sync::{
         // TODO: Fine-tune all atomic `Ordering`s.
         // We're starting with `Relaxed` for maximum performance
@@ -11,11 +12,10 @@ use std::{
 };
 
 use ahash::{AHashMap, AHashSet};
+use alloy_primitives::{Address, U256};
+use revm::primitives::{TransactTo, TxEnv};
 
-use crate::{
-    ExecutionTask, Task, TransactionsDependencies, TransactionsDependents, TransactionsStatus,
-    TxIdx, TxIncarnationStatus, TxVersion, ValidationTask,
-};
+use crate::{ExecutionTask, Task, TxIdx, TxIncarnationStatus, TxVersion, ValidationTask};
 
 // The BlockSTM collaborative scheduler coordinates execution & validation
 // tasks among threads.
@@ -42,6 +42,7 @@ use crate::{
 // transactions. Threads that perform these tasks can already detect validation
 // failure due to the ESTIMATE markers on memory locations, instead of waiting
 // for a subsequent incarnation to finish.
+#[derive(Debug, Default)]
 pub(crate) struct Scheduler {
     /// The number of transactions in this block.
     block_size: usize,
@@ -51,8 +52,12 @@ pub(crate) struct Scheduler {
     execution_idx: AtomicUsize,
     /// The next tranasction to try and validate.
     validation_idx: AtomicUsize,
+    /// Number of ongoing execution and validation tasks.
+    num_active_tasks: AtomicUsize,
     /// Number of times a task index was decreased.
     decrease_cnt: AtomicUsize,
+    /// Marker for completion
+    done_marker: AtomicBool,
     /// The most up-to-date incarnation number (initially 0) and
     /// the status of this incarnation.
     transactions_status: Vec<Mutex<TxIncarnationStatus>>,
@@ -69,38 +74,135 @@ pub(crate) struct Scheduler {
     /// ready, making it forever unexecuted.
     // TODO: Build a fuller dependency graph.
     transactions_dependencies: AHashMap<TxIdx, Mutex<AHashSet<TxIdx>>>,
-    /// Number of ongoing execution and validation tasks.
-    num_active_tasks: AtomicUsize,
-    /// Marker for completion
-    done_marker: AtomicBool,
+    // We use `Vec` for dependents to simplify runtime update code.
+    // We use `HashMap` for dependencies as we're only adding
+    // them during preprocessing and removing them during processing.
+    // The undelrying `HashSet` is to simplify index deduplication logic
+    // while adding new dependencies.
+    // TODO: Intuitively both should share a smiliar data structure?
 }
 
 impl Scheduler {
-    pub(crate) fn new(
-        block_size: usize,
-        transactions_status: TransactionsStatus,
-        transactions_dependents: TransactionsDependents,
-        transactions_dependencies: TransactionsDependencies,
-        starting_validation_idx: usize,
-    ) -> Self {
-        Self {
-            block_size,
-            starting_validation_idx,
-            execution_idx: AtomicUsize::new(0),
-            validation_idx: AtomicUsize::new(starting_validation_idx),
-            decrease_cnt: AtomicUsize::new(0),
-            transactions_status: transactions_status.into_iter().map(Mutex::new).collect(),
-            transactions_dependents: transactions_dependents
-                .into_iter()
-                .map(Mutex::new)
-                .collect(),
-            transactions_dependencies: transactions_dependencies
-                .into_iter()
-                .map(|(tx_idx, deps)| (tx_idx, Mutex::new(deps)))
-                .collect(),
-            num_active_tasks: AtomicUsize::new(0),
-            done_marker: AtomicBool::new(false),
+    // Prepare for a new execution run. Try to reuse previously allocated memory
+    // as much as possible, instead of deallocating then allocating anew.
+    // TODO: Make this as fast as possible.
+    // For instance, to operate on an intermediate container instead of updating the
+    // dependencies mutex as we go.
+    pub(crate) fn prepare(&mut self, beneficiary_address: &Address, txs: &[TxEnv]) -> NonZeroUsize {
+        // Marking transactions across same sender & recipient as dependents as they
+        // cross-depend at the `AccountInfo` level (reading & writing to nonce & balance).
+        // This is critical to avoid this nasty race condition:
+        // 1. A spends money
+        // 2. B sends money to A
+        // 3. A spends money
+        // Without (3) depending on (2), (2) may race and write to A first, then (1) comes
+        // second flagging (2) for re-execution and execute (3) as dependency. (3) would
+        // panic with a nonce error reading from (2) before it rewrites the new nonce
+        // reading from (1).
+        let mut tx_idxes_by_address: AHashMap<Address, Vec<TxIdx>> = AHashMap::new();
+        let mut transactions_dependents: AHashMap<TxIdx, AHashSet<TxIdx>> = AHashMap::new();
+        self.transactions_dependencies.clear();
+        for (tx_idx, tx) in txs.iter().enumerate() {
+            // We check for a non-empty value that guarantees to update the balance of the
+            // recipient, to avoid smart contract interactions that only some storage.
+            let mut recipient_with_changed_balance = None;
+            if let TransactTo::Call(to) = tx.transact_to {
+                if tx.value != U256::ZERO {
+                    recipient_with_changed_balance = Some(to);
+                }
+            }
+
+            // The first transaction never has dependencies.
+            if tx_idx > 0 {
+                // Register a lower transaction as this one's dependency.
+                let mut register_dependency = |dependency_idx: usize| {
+                    transactions_dependents
+                        .entry(dependency_idx)
+                        .or_default()
+                        .insert(tx_idx);
+                    self.transactions_dependencies
+                        .entry(tx_idx)
+                        .or_default()
+                        .get_mut()
+                        .unwrap()
+                        .insert(dependency_idx);
+                };
+
+                if &tx.caller == beneficiary_address
+                    || recipient_with_changed_balance.is_some_and(|to| &to == beneficiary_address)
+                {
+                    register_dependency(tx_idx - 1);
+                } else {
+                    if let Some(prev_idx) = tx_idxes_by_address
+                        .get(&tx.caller)
+                        .and_then(|tx_idxs| tx_idxs.last())
+                    {
+                        register_dependency(*prev_idx);
+                    }
+                    if let Some(to) = recipient_with_changed_balance {
+                        if let Some(prev_idx) = tx_idxes_by_address
+                            .get(&to)
+                            .and_then(|tx_idxs| tx_idxs.last())
+                        {
+                            register_dependency(*prev_idx);
+                        }
+                    }
+                }
+            }
+
+            // Register this transaction to the sender & recipient index maps.
+            tx_idxes_by_address
+                .entry(tx.caller)
+                .or_default()
+                .push(tx_idx);
+            if let Some(to) = recipient_with_changed_balance {
+                tx_idxes_by_address.entry(to).or_default().push(tx_idx);
+            }
         }
+
+        // Don't bother to evaluate the first fully sequential chain
+        self.starting_validation_idx = 1;
+        while transactions_dependents
+            .get(&(self.starting_validation_idx - 1))
+            .is_some_and(|deps| deps.contains(&self.starting_validation_idx))
+        {
+            self.starting_validation_idx += 1;
+        }
+
+        // Reset atomics
+        self.execution_idx.store(0, Relaxed);
+        self.validation_idx
+            .store(self.starting_validation_idx, Relaxed);
+        self.decrease_cnt.store(0, Relaxed);
+        self.num_active_tasks.store(0, Relaxed);
+        self.done_marker.store(false, Relaxed);
+
+        // Reset transactions' status & dependents
+        self.block_size = txs.len();
+        for i in 0..self.block_size {
+            let dependents = transactions_dependents.remove(&i).unwrap_or_default();
+            let status = if self.transactions_dependencies.contains_key(&i) {
+                TxIncarnationStatus::Aborting(0)
+            } else {
+                TxIncarnationStatus::ReadyToExecute(0)
+            };
+            // TODO: Assert the status & dependents lists are of equal length?
+            if i < self.transactions_status.len() {
+                *index_mutex!(self.transactions_status, i) = status;
+                *index_mutex!(self.transactions_dependents, i) = dependents;
+            } else {
+                self.transactions_status.push(Mutex::new(status));
+                self.transactions_dependents.push(Mutex::new(dependents));
+            }
+        }
+
+        let min_concurrency_level = NonZeroUsize::new(2).unwrap();
+        // This division by 2 means a thread must complete ~4 tasks to justify
+        // its overheads.
+        // TODO: Fine tune for edge cases given the dependency data above.
+        NonZeroUsize::new(self.block_size / 2)
+            .unwrap_or(min_concurrency_level)
+            .max(min_concurrency_level)
     }
 
     pub(crate) fn done(&self) -> bool {

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use alloy_primitives::U160;
+use pevm::Pevm;
 use rand::random;
 use revm::{
     db::PlainAccount,
@@ -59,6 +60,7 @@ fn mixed_block() {
         }
     }
     common::test_execute_revm(
+        &mut Pevm::default(),
         common::build_inmem_db(final_state),
         SpecId::LATEST,
         BlockEnv::default(),

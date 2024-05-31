@@ -10,6 +10,7 @@ pub mod erc20;
 
 use common::test_execute_revm;
 use erc20::generate_cluster;
+use pevm::Pevm;
 use revm::{
     db::PlainAccount,
     primitives::{Address, BlockEnv, SpecId, TxEnv},
@@ -21,6 +22,7 @@ fn erc20_independent() {
     let (mut state, txs) = generate_cluster(N, 1, 1);
     state.push((Address::ZERO, PlainAccount::default())); // Beneficiary
     test_execute_revm(
+        &mut Pevm::default(),
         common::build_inmem_db(state),
         SpecId::LATEST,
         BlockEnv::default(),
@@ -47,6 +49,7 @@ fn erc20_clusters() {
         final_txs.extend(txs);
     }
     common::test_execute_revm(
+        &mut Pevm::default(),
         common::build_inmem_db(final_state),
         SpecId::LATEST,
         BlockEnv::default(),

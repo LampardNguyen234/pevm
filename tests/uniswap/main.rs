@@ -12,6 +12,7 @@ pub mod erc20;
 pub mod uniswap;
 
 use crate::uniswap::generate_cluster;
+use pevm::Pevm;
 use revm::{
     db::PlainAccount,
     primitives::{Address, BlockEnv, SpecId, TxEnv},
@@ -31,6 +32,7 @@ fn uniswap_clusters() {
         final_txs.extend(txs);
     }
     common::test_execute_revm(
+        &mut Pevm::default(),
         common::build_inmem_db(final_state),
         SpecId::LATEST,
         BlockEnv::default(),

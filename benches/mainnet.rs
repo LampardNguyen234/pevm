@@ -7,7 +7,7 @@
 use std::{num::NonZeroUsize, thread};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pevm::{execute_revm, get_block_env, get_block_spec, get_tx_envs};
+use pevm::{get_block_env, get_block_spec, get_tx_envs, Pevm};
 
 // Better project structure
 #[path = "../tests/common/mod.rs"]
@@ -42,9 +42,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 )
             })
         });
+        let mut pevm = Pevm::default();
         group.bench_function("Parallel", |b| {
             b.iter(|| {
-                execute_revm(
+                pevm.execute_revm(
                     black_box(db.clone()),
                     black_box(spec_id),
                     black_box(block_env.clone()),

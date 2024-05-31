@@ -2,7 +2,7 @@
 
 // TODO: Better types & API please
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 
 use revm::primitives::{AccountInfo, Address, U256};
 
@@ -35,6 +35,7 @@ enum MemoryValue {
     Storage(U256),
 }
 
+#[derive(Debug)]
 enum MemoryEntry {
     Data(TxIncarnation, MemoryValue),
     // When an incarnation is aborted due to a validation failure, the
@@ -71,17 +72,6 @@ pub(crate) enum TxIncarnationStatus {
     Executed(TxIncarnation),
     Aborting(TxIncarnation),
 }
-
-// TODO: Clearer doc. See `Scheduler` in `scheduler.rs` for now.
-type TransactionsStatus = Vec<TxIncarnationStatus>;
-// We use `Vec` for dependents to simplify runtime update code.
-// We use `HashMap` for dependencies as we're only adding
-// them during preprocessing and removing them during processing.
-// The undelrying `HashSet` is to simplify index deduplication logic
-// while adding new dependencies.
-// TODO: Intuitively both should share a smiliar data structure?
-type TransactionsDependents = Vec<AHashSet<TxIdx>>;
-type TransactionsDependencies = AHashMap<TxIdx, AHashSet<TxIdx>>;
 
 // BlockSTM maintains an in-memory multi-version data structure that
 // stores for each memory location the latest value written per
@@ -126,6 +116,7 @@ pub enum ReadError {
 // The memory locations needed to execute an incarnation.
 // While a hash map is cleaner and reduce duplication chances,
 // vectors are noticeably faster in the mainnet benchmark.
+#[derive(Debug)]
 struct ReadSet {
     common: Vec<(MemoryLocation, ReadOrigin)>,
     // An explicity beneficiary read may read from multiple lazily
@@ -141,6 +132,16 @@ impl ReadSet {
             common: Vec::new(),
             beneficiary: Vec::new(),
         }
+    }
+
+    fn clear(&mut self) {
+        self.common.clear();
+        self.beneficiary.clear();
+    }
+}
+impl Default for ReadSet {
+    fn default() -> Self {
+        ReadSet::new()
     }
 }
 
@@ -164,7 +165,7 @@ enum Task {
 // This optimization is desired as we constantly index into many
 // vectors of the block-size size. It can yield up to 5% improvement.
 macro_rules! index_mutex {
-    ( $vec:expr, $index:expr) => {
+    ($vec:expr, $index:expr) => {
         // SAFETY: A correct scheduler would not leak indexes larger
         // than the block size, which is the size of all vectors we
         // index via this macro. Otherwise, DO NOT USE!
@@ -174,7 +175,7 @@ macro_rules! index_mutex {
 }
 
 mod pevm;
-pub use pevm::{execute, execute_revm, PevmError, PevmResult};
+pub use pevm::{Pevm, PevmError, PevmResult};
 mod mv_memory;
 mod primitives;
 pub use primitives::{get_block_env, get_block_spec, get_tx_envs};

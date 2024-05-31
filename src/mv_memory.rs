@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::Mutex};
 
+use alloy_primitives::Address;
 // ~x2 performance gain over a naive `RwLock<HashMap>`!
 use dashmap::{
     mapref::{entry::Entry, one::Ref},
@@ -27,6 +28,7 @@ pub(crate) enum ReadMemoryResult {
 // multiple writes for each memory location, along with a value and an associated
 // version of a corresponding transaction.
 // TODO: Better concurrency control if possible.
+#[derive(Debug)]
 pub(crate) struct MvMemory {
     beneficiary_location: MemoryLocation,
     data: DashMap<MemoryLocation, BTreeMap<TxIdx, MemoryEntry>, ahash::RandomState>,
@@ -34,15 +36,32 @@ pub(crate) struct MvMemory {
     last_read_set: Vec<Mutex<ReadSet>>,
 }
 
-impl MvMemory {
-    pub(crate) fn new(block_size: usize, beneficiary_location: MemoryLocation) -> Self {
+impl Default for MvMemory {
+    fn default() -> Self {
         Self {
-            beneficiary_location,
-            data: DashMap::with_hasher(ahash::RandomState::new()),
-            last_written_locations: (0..block_size).map(|_| Mutex::new(Vec::new())).collect(),
-            last_read_set: (0..block_size)
-                .map(|_| Mutex::new(ReadSet::new()))
-                .collect(),
+            beneficiary_location: MemoryLocation::Basic(Address::ZERO),
+            data: DashMap::with_hasher(ahash::RandomState::default()),
+            last_written_locations: Vec::default(),
+            last_read_set: Vec::default(),
+        }
+    }
+}
+
+impl MvMemory {
+    // Prepare for a new execution run. Try to reuse previously allocated memory
+    // as much as possible, instead of deallocating then allocating anew.
+    pub(crate) fn prepare(&mut self, block_size: usize, beneficiary_location: MemoryLocation) {
+        self.beneficiary_location = beneficiary_location;
+        self.data.clear();
+        for i in 0..block_size {
+            // TODO: Assert the write & read sets are of equal length?
+            if i < self.last_written_locations.len() {
+                index_mutex!(self.last_written_locations, i).clear();
+                index_mutex!(self.last_read_set, i).clear();
+            } else {
+                self.last_written_locations.push(Mutex::default());
+                self.last_read_set.push(Mutex::default());
+            }
         }
     }
 

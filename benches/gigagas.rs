@@ -8,7 +8,7 @@ use std::{num::NonZeroUsize, thread};
 
 use alloy_primitives::{Address, U160, U256};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pevm::execute_revm;
+use pevm::Pevm;
 use revm::{
     db::PlainAccount,
     primitives::{BlockEnv, SpecId, TransactTo, TxEnv},
@@ -45,9 +45,10 @@ pub fn bench(c: &mut Criterion, name: &str, db: InMemoryDB, txs: Vec<TxEnv>) {
             )
         })
     });
+    let mut pevm = Pevm::default();
     group.bench_function("Parallel", |b| {
         b.iter(|| {
-            execute_revm(
+            pevm.execute_revm(
                 black_box(db.clone()),
                 black_box(spec_id),
                 black_box(block_env.clone()),

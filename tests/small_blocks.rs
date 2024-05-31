@@ -3,6 +3,7 @@
 
 use alloy_primitives::{Address, U256};
 use alloy_rpc_types::{Block, BlockTransactions, Transaction};
+use pevm::Pevm;
 use revm::{
     primitives::{BlockEnv, SpecId, TransactTo, TxEnv},
     InMemoryDB,
@@ -13,6 +14,7 @@ pub mod common;
 #[test]
 fn empty_alloy_block() {
     common::test_execute_alloy(
+        &mut Pevm::default(),
         InMemoryDB::default(),
         Block {
             header: common::MOCK_ALLOY_BLOCK_HEADER.clone(),
@@ -27,6 +29,7 @@ fn empty_alloy_block() {
 #[test]
 fn empty_revm_block() {
     common::test_execute_revm(
+        &mut Pevm::default(),
         InMemoryDB::default(),
         SpecId::LATEST,
         BlockEnv::default(),
@@ -37,6 +40,7 @@ fn empty_revm_block() {
 #[test]
 fn one_tx_alloy_block() {
     common::test_execute_alloy(
+        &mut Pevm::default(),
         common::build_inmem_db(vec![common::mock_account(0)]),
         Block {
             // Legit header but with no transactions
@@ -59,6 +63,7 @@ fn one_tx_alloy_block() {
 #[test]
 fn one_tx_revm_block() {
     common::test_execute_revm(
+        &mut Pevm::default(),
         common::build_inmem_db(vec![common::mock_account(0)]),
         SpecId::LATEST,
         BlockEnv::default(),

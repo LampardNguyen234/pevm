@@ -5,7 +5,7 @@ use std::fs::{self, File};
 
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types::BlockId;
-use pevm::RpcStorage;
+use pevm::{Pevm, RpcStorage};
 use reqwest::Url;
 use revm::db::CacheDB;
 use tokio::runtime::Runtime;
@@ -18,6 +18,7 @@ fn mainnet_blocks_from_rpc() {
         .unwrap_or("https://eth.llamarpc.com".to_string())
         .parse()
         .unwrap();
+    let mut pevm = Pevm::default();
 
     // First block under 50 transactions of each EVM-spec-changing fork
     for block_number in [
@@ -43,7 +44,7 @@ fn mainnet_blocks_from_rpc() {
             .unwrap();
         let rpc_storage = RpcStorage::new(provider, BlockId::number(block_number - 1));
         let db = CacheDB::new(&rpc_storage);
-        common::test_execute_alloy(db, block.clone(), None, true);
+        common::test_execute_alloy(&mut pevm, db, block.clone(), None, true);
 
         // Snapshot blocks (for benchmark)
         // TODO: Port to a dedicated CLI instead?
@@ -61,8 +62,12 @@ fn mainnet_blocks_from_rpc() {
 
 #[test]
 fn mainnet_blocks_from_disk() {
+    let mut pevm = Pevm::default();
     common::for_each_block_from_disk(|block, db| {
-        // TODO: Run several times to try catching a race condition if there is any.
-        common::test_execute_alloy(db.clone(), block.clone(), None, true)
+        // Run a few times to try catching a race condition or when there is a bug when
+        // reusing resources.
+        for _ in 0..3 {
+            common::test_execute_alloy(&mut pevm, db.clone(), block.clone(), None, true)
+        }
     });
 }

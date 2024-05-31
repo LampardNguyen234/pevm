@@ -1,5 +1,5 @@
 use alloy_rpc_types::{Block, Header};
-use pevm::{get_block_env, get_block_spec, get_tx_envs, PevmError, PevmResult};
+use pevm::{get_block_env, get_block_spec, get_tx_envs, Pevm, PevmError, PevmResult};
 use revm::{
     db::PlainAccount,
     primitives::{
@@ -109,6 +109,7 @@ fn assert_execution_result<D: DatabaseRef>(
 // Execute an REVM block sequentially & with PEVM and assert that
 // the execution results match.
 pub fn test_execute_revm<D: DatabaseRef + DatabaseCommit + Send + Sync + Clone>(
+    pevm: &mut Pevm,
     db: D,
     spec_id: SpecId,
     block_env: BlockEnv,
@@ -119,7 +120,7 @@ pub fn test_execute_revm<D: DatabaseRef + DatabaseCommit + Send + Sync + Clone>(
     let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
     assert_execution_result::<D>(
         execute_sequential(db.clone(), spec_id, block_env.clone(), &txs),
-        pevm::execute_revm(db, spec_id, block_env, txs, concurrency_level),
+        pevm.execute_revm(db, spec_id, block_env, txs, concurrency_level),
         false, // TODO: Parameterize this
     );
 }
@@ -127,6 +128,7 @@ pub fn test_execute_revm<D: DatabaseRef + DatabaseCommit + Send + Sync + Clone>(
 // Execute an Alloy block sequentially & with PEVM and assert that
 // the execution results match.
 pub fn test_execute_alloy<D: DatabaseRef + DatabaseCommit + Send + Sync + Clone>(
+    pevm: &mut Pevm,
     db: D,
     block: Block,
     parent_header: Option<Header>,
@@ -142,7 +144,7 @@ pub fn test_execute_alloy<D: DatabaseRef + DatabaseCommit + Send + Sync + Clone>
             get_block_env(&block.header, parent_header.as_ref()).unwrap(),
             &get_tx_envs(&block.transactions).unwrap(),
         ),
-        pevm::execute(db, block, parent_header, concurrency_level),
+        pevm.execute(db, block, parent_header, concurrency_level),
         must_succeed,
     );
 }
